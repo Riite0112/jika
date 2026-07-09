@@ -1,3 +1,7 @@
+.jika-price-wrap {
+  display: inline;
+}
+
 .jika-badge {
   display: inline-flex;
   align-items: center;

@@ -2,6 +2,7 @@
   "use strict";
 
   const JIKA_BADGE_CLASS = "jika-badge";
+  const JIKA_WRAP_CLASS = "jika-price-wrap";
   const JIKA_PROCESSED_ATTR = "data-jika-processed";
   const DEFAULT_SETTINGS = {
     enabled: true,
@@ -170,11 +171,268 @@
       .filter(({ amount }) => amount !== null && amount >= minPrice);
   }
 
+  function normalizeSettings(settings) {
+    const hourlyWage = Number(settings.hourlyWage);
+    const minPrice = Number(settings.minPrice);
+
+    return {
+      enabled: settings.enabled !== false,
+      hourlyWage:
+        Number.isFinite(hourlyWage) && hourlyWage > 0
+          ? Math.round(hourlyWage)
+          : DEFAULT_SETTINGS.hourlyWage,
+      minPrice:
+        Number.isFinite(minPrice) && minPrice >= 0
+          ? Math.round(minPrice)
+          : DEFAULT_SETTINGS.minPrice,
+      disabledDomains: Array.isArray(settings.disabledDomains)
+        ? settings.disabledDomains
+            .map((domain) => String(domain).toLowerCase())
+            .filter(Boolean)
+        : []
+    };
+  }
+
+  function readSettings() {
+    if (!globalThis.chrome?.storage?.sync) {
+      return Promise.resolve(normalizeSettings(DEFAULT_SETTINGS));
+    }
+
+    return new Promise((resolve) => {
+      chrome.storage.sync.get(DEFAULT_SETTINGS, (storedSettings) => {
+        resolve(normalizeSettings(storedSettings || DEFAULT_SETTINGS));
+      });
+    });
+  }
+
+  function formatNumber(value) {
+    return new Intl.NumberFormat("ja-JP").format(value);
+  }
+
+  function formatWorkDuration(price, hourlyWage) {
+    const hours = price / hourlyWage;
+
+    if (hours < 1) {
+      return `${Math.max(1, Math.round(hours * 60))}分`;
+    }
+
+    if (hours <= 8) {
+      return `${hours.toFixed(1)}時間`;
+    }
+
+    if (hours <= 160) {
+      return `${(hours / 8).toFixed(1)}日`;
+    }
+
+    return `${(hours / 160).toFixed(1)}ヶ月`;
+  }
+
+  let currentSettings = normalizeSettings(DEFAULT_SETTINGS);
+  let observer = null;
+  let debounceTimer = null;
+
+  function createBadge(amount) {
+    const badge = document.createElement("span");
+    badge.className = JIKA_BADGE_CLASS;
+    badge.setAttribute(JIKA_PROCESSED_ATTR, "badge");
+    badge.textContent = `⏱ ${formatWorkDuration(
+      amount,
+      currentSettings.hourlyWage
+    )}`;
+    badge.title = `時給${formatNumber(currentSettings.hourlyWage)}円換算`;
+    return badge;
+  }
+
+  function renderTextNode({ node, prices }) {
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+
+    for (const price of prices) {
+      if (price.start > cursor) {
+        fragment.append(document.createTextNode(node.nodeValue.slice(cursor, price.start)));
+      }
+
+      const wrapper = document.createElement("span");
+      wrapper.className = JIKA_WRAP_CLASS;
+      wrapper.setAttribute(JIKA_PROCESSED_ATTR, "text");
+      wrapper.dataset.jikaPriceText = price.text;
+      wrapper.append(document.createTextNode(price.text), createBadge(price.amount));
+      fragment.append(wrapper);
+      cursor = price.end;
+    }
+
+    if (cursor < node.nodeValue.length) {
+      fragment.append(document.createTextNode(node.nodeValue.slice(cursor)));
+    }
+
+    node.parentNode.replaceChild(fragment, node);
+  }
+
+  function renderTextPrices() {
+    for (const item of collectTextPriceNodes(document.body, currentSettings.minPrice)) {
+      if (item.node.parentNode) {
+        renderTextNode(item);
+      }
+    }
+  }
+
+  function renderAmazonPrices() {
+    for (const { element, amount } of collectAmazonPriceTargets(
+      currentSettings.minPrice
+    )) {
+      const badge = createBadge(amount);
+      element.setAttribute(JIKA_PROCESSED_ATTR, "amazon");
+      element.insertAdjacentElement("afterend", badge);
+    }
+  }
+
+  function unwrapTextBadges() {
+    for (const wrapper of document.querySelectorAll(
+      `.${JIKA_WRAP_CLASS}[${JIKA_PROCESSED_ATTR}="text"]`
+    )) {
+      const priceText =
+        wrapper.dataset.jikaPriceText ||
+        [...wrapper.childNodes]
+          .filter((node) => node.nodeType === Node.TEXT_NODE)
+          .map((node) => node.nodeValue)
+          .join("");
+      wrapper.replaceWith(document.createTextNode(priceText));
+    }
+  }
+
+  function clearRenderedBadges() {
+    unwrapTextBadges();
+
+    for (const badge of document.querySelectorAll(`.${JIKA_BADGE_CLASS}`)) {
+      badge.remove();
+    }
+
+    for (const element of document.querySelectorAll(
+      `[${JIKA_PROCESSED_ATTR}="amazon"]`
+    )) {
+      element.removeAttribute(JIKA_PROCESSED_ATTR);
+    }
+  }
+
+  function isDomainDisabled() {
+    const host = location.hostname.toLowerCase();
+    return currentSettings.disabledDomains.some(
+      (domain) => host === domain || host.endsWith(`.${domain}`)
+    );
+  }
+
+  function shouldRender() {
+    return (
+      currentSettings.enabled &&
+      currentSettings.hourlyWage > 0 &&
+      !isDomainDisabled() &&
+      Boolean(document.body)
+    );
+  }
+
+  function disconnectObserver() {
+    if (observer) {
+      observer.disconnect();
+    }
+  }
+
+  function observeMutations() {
+    if (!document.body || observer) {
+      return;
+    }
+
+    observer = new MutationObserver((mutations) => {
+      const hasPriceCandidate = mutations.some(
+        (mutation) =>
+          mutation.type === "characterData" ||
+          [...mutation.addedNodes].some(
+            (node) =>
+              node.nodeType === Node.TEXT_NODE ||
+              node.nodeType === Node.ELEMENT_NODE
+          )
+      );
+
+      if (hasPriceCandidate) {
+        scheduleIncrementalRender();
+      }
+    });
+    observer.observe(document.body, {
+      childList: true,
+      characterData: true,
+      subtree: true
+    });
+  }
+
+  function renderNewPrices() {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+
+    if (!shouldRender()) {
+      return;
+    }
+
+    disconnectObserver();
+    renderAmazonPrices();
+    renderTextPrices();
+    observer = null;
+    observeMutations();
+  }
+
+  function scheduleIncrementalRender() {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(renderNewPrices, 300);
+  }
+
+  function refreshAllBadges() {
+    clearTimeout(debounceTimer);
+    disconnectObserver();
+    observer = null;
+    clearRenderedBadges();
+    renderNewPrices();
+  }
+
+  function watchSettings() {
+    if (!globalThis.chrome?.storage?.onChanged) {
+      return;
+    }
+
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== "sync") {
+        return;
+      }
+
+      const nextSettings = { ...currentSettings };
+      for (const key of Object.keys(DEFAULT_SETTINGS)) {
+        if (Object.hasOwn(changes, key)) {
+          nextSettings[key] = changes[key].newValue;
+        }
+      }
+      currentSettings = normalizeSettings(nextSettings);
+      refreshAllBadges();
+    });
+  }
+
+  function init() {
+    readSettings().then((settings) => {
+      currentSettings = settings;
+      refreshAllBadges();
+      watchSettings();
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init, { once: true });
+  } else {
+    init();
+  }
+
   window.__jikaDebug = {
     badgeClass: JIKA_BADGE_CLASS,
     collectAmazonPriceTargets,
     collectTextPriceNodes,
     findPricesInText,
-    parsePriceText
+    formatWorkDuration,
+    parsePriceText,
+    refreshAllBadges
   };
 })();
