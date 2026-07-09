@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "時価(Jika)",
+  "version": "0.1.0",
+  "description": "ECサイトの価格を自分の労働時間に換算して表示します。",
+  "permissions": ["storage", "activeTab"],
+  "action": {
+    "default_title": "時価(Jika)",
+    "default_popup": "src/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.amazon.co.jp/*",
+        "*://*.rakuten.co.jp/*",
+        "*://*.shopping.yahoo.co.jp/*",
+        "*://*.mercari.com/*"
+      ],
+      "js": ["src/content.js"],
+      "css": ["src/content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
