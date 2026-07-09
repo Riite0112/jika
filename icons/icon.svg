@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="時価(Jika)">
+  <rect width="128" height="128" rx="26" fill="#1f2937"/>
+  <circle cx="78" cy="66" r="34" fill="#f8fafc"/>
+  <circle cx="78" cy="66" r="27" fill="none" stroke="#334155" stroke-width="6"/>
+  <path d="M78 47v20l16 10" fill="none" stroke="#334155" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="33" y="82" fill="#22c55e" font-family="Arial, Helvetica, sans-serif" font-size="54" font-weight="800">¥</text>
+</svg>
