@@ -14,6 +14,19 @@
     /([¥￥]\s*(?:[0-9０-９]{1,3}(?:[,，][0-9０-９]{3})+|[0-9０-９]+)|(?:[0-9０-９]{1,3}(?:[,，][0-9０-９]{3})+|[0-9０-９]+)\s*円)/g;
   const PRICE_SIGNAL_PATTERN = /[¥￥円]/;
   const AMAZON_PRICE_SELECTOR = ".a-price, .a-price-whole";
+  const AMAZON_SCAN_ROOT_SELECTOR = [
+    "#corePriceDisplay_desktop_feature_div",
+    "#corePrice_feature_div",
+    "#apex_desktop",
+    "#apex_desktop_qualifiedBuybox",
+    "#twister_feature_div",
+    "#variation_color_name",
+    "#variation_size_name",
+    "#centerCol",
+    "#rightCol",
+    "#desktop_buybox",
+    "#s-main-slot"
+  ].join(",");
   const MUTATION_DEBOUNCE_MS = 500;
   const MAX_PENDING_ROOTS = 80;
   const SKIP_TAGS = new Set([
@@ -264,6 +277,30 @@
       .filter(({ amount }) => amount !== null && amount >= minPrice);
   }
 
+  function getAmazonScanRoots(root) {
+    if (!isAmazonSite()) {
+      return [root];
+    }
+
+    if (
+      root !== document &&
+      root !== document.body &&
+      root !== document.documentElement
+    ) {
+      return [root];
+    }
+
+    const roots = [
+      ...document.querySelectorAll(AMAZON_SCAN_ROOT_SELECTOR)
+    ].filter((element, index, list) => {
+      return !list.some(
+        (other, otherIndex) => otherIndex !== index && element.contains(other)
+      );
+    });
+
+    return roots.length > 0 ? roots : [document.body];
+  }
+
   function normalizeSettings(settings) {
     const hourlyWage = Number(settings.hourlyWage);
     const minPrice = Number(settings.minPrice);
@@ -387,13 +424,15 @@
   }
 
   function renderAmazonPrices(root = document.body) {
-    for (const { element, amount } of collectAmazonPriceTargets(
-      root,
-      currentSettings.minPrice
-    )) {
-      const badge = createBadge(amount);
-      element.setAttribute(JIKA_PROCESSED_ATTR, "amazon");
-      element.insertAdjacentElement("afterend", badge);
+    for (const scanRoot of getAmazonScanRoots(root)) {
+      for (const { element, amount } of collectAmazonPriceTargets(
+        scanRoot,
+        currentSettings.minPrice
+      )) {
+        const badge = createBadge(amount);
+        element.setAttribute(JIKA_PROCESSED_ATTR, "amazon");
+        element.insertAdjacentElement("afterend", badge);
+      }
     }
   }
 
@@ -452,7 +491,22 @@
     }
   }
 
+  function getMutationObserverRoots() {
+    if (!isAmazonSite()) {
+      return [document.body];
+    }
+
+    const roots = getAmazonScanRoots(document.body).filter(
+      (root) => root?.isConnected
+    );
+    return roots.length > 0 ? roots : [document.body];
+  }
+
   function hasPotentialPriceSignal(node) {
+    if (isAmazonSite()) {
+      return hasAmazonPriceSignal(node);
+    }
+
     if (node.nodeType === Node.TEXT_NODE) {
       if (node.parentElement?.closest(AMAZON_PRICE_SELECTOR)) {
         return true;
@@ -477,6 +531,21 @@
     }
 
     return PRICE_SIGNAL_PATTERN.test(node.textContent || "");
+  }
+
+  function hasAmazonPriceSignal(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return Boolean(node.parentElement?.closest(AMAZON_PRICE_SELECTOR));
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return false;
+    }
+
+    return (
+      node.matches?.(AMAZON_PRICE_SELECTOR) ||
+      Boolean(node.querySelector?.(AMAZON_PRICE_SELECTOR))
+    );
   }
 
   function compactPendingRoots(roots) {
@@ -565,11 +634,14 @@
         scheduleIncrementalRender();
       }
     });
-    observer.observe(document.body, {
-      childList: true,
-      characterData: true,
-      subtree: true
-    });
+
+    for (const root of getMutationObserverRoots()) {
+      observer.observe(root, {
+        childList: true,
+        characterData: true,
+        subtree: true
+      });
+    }
   }
 
   function renderPendingPrices() {
