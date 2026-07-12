@@ -12,6 +12,10 @@
   };
   const PRICE_PATTERN =
     /([¥￥]\s*(?:[0-9０-９]{1,3}(?:[,，][0-9０-９]{3})+|[0-9０-９]+)|(?:[0-9０-９]{1,3}(?:[,，][0-9０-９]{3})+|[0-9０-９]+)\s*円)/g;
+  const PRICE_SIGNAL_PATTERN = /[¥￥円]/;
+  const AMAZON_PRICE_SELECTOR = ".a-price, .a-price-whole";
+  const MUTATION_DEBOUNCE_MS = 500;
+  const MAX_PENDING_ROOTS = 80;
   const SKIP_TAGS = new Set([
     "SCRIPT",
     "STYLE",
@@ -35,6 +39,8 @@
     "#listPrice",
     "[data-a-strike='true']"
   ];
+  const AMAZON_REFERENCE_PRICE_SELECTOR =
+    AMAZON_REFERENCE_PRICE_SELECTORS.join(",");
   const AMAZON_REFERENCE_LABEL_PATTERN =
     /(過去価格|非セール価格|参考価格|通常価格|定価|メーカー希望小売価格|値引き前|割引前)/;
 
@@ -137,12 +143,11 @@
     }
 
     for (let current = element; current; current = current.parentElement) {
-      if (current.matches?.(AMAZON_REFERENCE_PRICE_SELECTORS.join(","))) {
-        return true;
-      }
-
-      const decoration = getComputedStyle(current).textDecorationLine;
-      if (decoration.includes("line-through")) {
+      if (
+        current.matches?.(AMAZON_REFERENCE_PRICE_SELECTOR) ||
+        current.tagName === "S" ||
+        current.tagName === "DEL"
+      ) {
         return true;
       }
     }
@@ -169,6 +174,26 @@
 
   function collectTextPriceNodes(root, minPrice = DEFAULT_SETTINGS.minPrice) {
     if (!root) {
+      return [];
+    }
+
+    if (root.nodeType === Node.TEXT_NODE) {
+      if (!root.nodeValue?.trim() || !root.parentElement) {
+        return [];
+      }
+
+      if (shouldSkipElement(root.parentElement)) {
+        return [];
+      }
+
+      const prices = findPricesInText(root.nodeValue, minPrice);
+      return prices.length > 0 ? [{ node: root, prices }] : [];
+    }
+
+    if (
+      root.nodeType !== Node.ELEMENT_NODE &&
+      root.nodeType !== Node.DOCUMENT_FRAGMENT_NODE
+    ) {
       return [];
     }
 
@@ -201,12 +226,25 @@
     return nodes;
   }
 
-  function collectAmazonPriceTargets(minPrice = DEFAULT_SETTINGS.minPrice) {
-    const candidates = new Set(
-      [...document.querySelectorAll(".a-price, .a-price-whole")]
-        .map((element) => element.closest(".a-price") || element)
-        .filter(Boolean)
-    );
+  function collectAmazonPriceTargets(
+    root = document,
+    minPrice = DEFAULT_SETTINGS.minPrice
+  ) {
+    const candidates = new Set();
+
+    if (!root.querySelectorAll && root.nodeType !== Node.ELEMENT_NODE) {
+      return [];
+    }
+
+    if (root.nodeType === Node.ELEMENT_NODE) {
+      if (root.matches?.(AMAZON_PRICE_SELECTOR)) {
+        candidates.add(root.closest(".a-price") || root);
+      }
+    }
+
+    for (const element of root.querySelectorAll?.(AMAZON_PRICE_SELECTOR) || []) {
+      candidates.add(element.closest(".a-price") || element);
+    }
 
     return [...candidates]
       .filter(
@@ -285,6 +323,7 @@
   let currentSettings = normalizeSettings(DEFAULT_SETTINGS);
   let observer = null;
   let debounceTimer = null;
+  let pendingRoots = new Set();
 
   function createBadge(amount) {
     const badge = document.createElement("span");
@@ -323,22 +362,44 @@
     node.parentNode.replaceChild(fragment, node);
   }
 
-  function renderTextPrices() {
-    for (const item of collectTextPriceNodes(document.body, currentSettings.minPrice)) {
+  function renderTextPrices(root = document.body) {
+    if (!shouldScanTextPrices(root)) {
+      return;
+    }
+
+    for (const item of collectTextPriceNodes(root, currentSettings.minPrice)) {
       if (item.node.parentNode) {
         renderTextNode(item);
       }
     }
   }
 
-  function renderAmazonPrices() {
+  function shouldScanTextPrices(root) {
+    if (!isAmazonSite()) {
+      return true;
+    }
+
+    return (
+      root !== document &&
+      root !== document.body &&
+      root !== document.documentElement
+    );
+  }
+
+  function renderAmazonPrices(root = document.body) {
     for (const { element, amount } of collectAmazonPriceTargets(
+      root,
       currentSettings.minPrice
     )) {
       const badge = createBadge(amount);
       element.setAttribute(JIKA_PROCESSED_ATTR, "amazon");
       element.insertAdjacentElement("afterend", badge);
     }
+  }
+
+  function renderPricesInRoot(root) {
+    renderAmazonPrices(root);
+    renderTextPrices(root);
   }
 
   function unwrapTextBadges() {
@@ -391,23 +452,116 @@
     }
   }
 
+  function hasPotentialPriceSignal(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      if (node.parentElement?.closest(AMAZON_PRICE_SELECTOR)) {
+        return true;
+      }
+
+      return PRICE_SIGNAL_PATTERN.test(node.nodeValue || "");
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return false;
+    }
+
+    if (
+      node.matches?.(AMAZON_PRICE_SELECTOR) ||
+      node.querySelector?.(AMAZON_PRICE_SELECTOR)
+    ) {
+      return true;
+    }
+
+    if (node.childElementCount > 120) {
+      return true;
+    }
+
+    return PRICE_SIGNAL_PATTERN.test(node.textContent || "");
+  }
+
+  function compactPendingRoots(roots) {
+    if (roots.some((root) => root === document || root === document.body)) {
+      return [document.body];
+    }
+
+    const compacted = [];
+
+    for (const root of roots) {
+      if (!root?.isConnected) {
+        continue;
+      }
+
+      const isCovered = compacted.some(
+        (existing) => existing === root || existing.contains?.(root)
+      );
+      if (isCovered) {
+        continue;
+      }
+
+      for (let index = compacted.length - 1; index >= 0; index -= 1) {
+        if (root.contains?.(compacted[index])) {
+          compacted.splice(index, 1);
+        }
+      }
+
+      compacted.push(root);
+    }
+
+    return compacted.length > 0 ? compacted : [document.body];
+  }
+
+  function queueRootForRender(node) {
+    if (!node || node.nodeType === Node.COMMENT_NODE) {
+      return;
+    }
+
+    const root =
+      node.nodeType === Node.TEXT_NODE
+        ? node
+        : node.nodeType === Node.ELEMENT_NODE ||
+            node.nodeType === Node.DOCUMENT_FRAGMENT_NODE
+          ? node
+          : node.parentElement;
+
+    if (!root?.isConnected) {
+      return;
+    }
+
+    if (pendingRoots.has(document.body)) {
+      return;
+    }
+
+    if (pendingRoots.size >= MAX_PENDING_ROOTS) {
+      pendingRoots = new Set([document.body]);
+      return;
+    }
+
+    pendingRoots.add(root);
+  }
+
   function observeMutations() {
     if (!document.body || observer) {
       return;
     }
 
     observer = new MutationObserver((mutations) => {
-      const hasPriceCandidate = mutations.some(
-        (mutation) =>
-          mutation.type === "characterData" ||
-          [...mutation.addedNodes].some(
-            (node) =>
-              node.nodeType === Node.TEXT_NODE ||
-              node.nodeType === Node.ELEMENT_NODE
-          )
-      );
+      for (const mutation of mutations) {
+        if (
+          mutation.type === "characterData" &&
+          hasPotentialPriceSignal(mutation.target)
+        ) {
+          queueRootForRender(mutation.target);
+          continue;
+        }
 
-      if (hasPriceCandidate) {
+        for (const node of mutation.addedNodes) {
+          if (hasPotentialPriceSignal(node)) {
+            queueRootForRender(node);
+          }
+        }
+      }
+
+      if (pendingRoots.size > 0) {
         scheduleIncrementalRender();
       }
     });
@@ -418,32 +572,42 @@
     });
   }
 
-  function renderNewPrices() {
+  function renderPendingPrices() {
     clearTimeout(debounceTimer);
     debounceTimer = null;
 
     if (!shouldRender()) {
+      pendingRoots.clear();
       return;
     }
 
+    const roots = compactPendingRoots([...pendingRoots]);
+    pendingRoots.clear();
     disconnectObserver();
-    renderAmazonPrices();
-    renderTextPrices();
+    for (const root of roots) {
+      renderPricesInRoot(root);
+    }
     observer = null;
     observeMutations();
   }
 
   function scheduleIncrementalRender() {
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(renderNewPrices, 300);
+    debounceTimer = setTimeout(renderPendingPrices, MUTATION_DEBOUNCE_MS);
+  }
+
+  function renderAllPrices() {
+    pendingRoots = new Set([document.body]);
+    renderPendingPrices();
   }
 
   function refreshAllBadges() {
     clearTimeout(debounceTimer);
     disconnectObserver();
     observer = null;
+    pendingRoots.clear();
     clearRenderedBadges();
-    renderNewPrices();
+    renderAllPrices();
   }
 
   function watchSettings() {
