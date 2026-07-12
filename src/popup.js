@@ -206,28 +206,43 @@
     if (!currentHost) {
       elements.disableSite.disabled = true;
       elements.disableSite.textContent = "このサイトでは無効";
+      elements.disableSite.classList.remove("is-disabled-site");
       return;
     }
 
-    const disabled = currentSettings.disabledDomains.includes(currentHost);
-    elements.disableSite.disabled = disabled;
+    const disabled = isCurrentSiteDisabled();
+    elements.disableSite.disabled = false;
     elements.disableSite.textContent = disabled
-      ? "このサイトは無効済み"
+      ? "このサイトで有効に戻す"
       : "このサイトでは無効";
+    elements.disableSite.classList.toggle("is-disabled-site", disabled);
   }
 
-  function disableCurrentSite() {
+  function isCurrentSiteDisabled() {
+    return currentSettings.disabledDomains.some(
+      (domain) => currentHost === domain || currentHost.endsWith(`.${domain}`)
+    );
+  }
+
+  function toggleCurrentSite() {
     if (!currentHost) {
       setStatus("このページでは使えません");
       return;
     }
 
-    const disabledDomains = Array.from(
-      new Set([...currentSettings.disabledDomains, currentHost])
-    );
+    const disabled = isCurrentSiteDisabled();
+    const disabledDomains = disabled
+      ? currentSettings.disabledDomains.filter(
+          (domain) =>
+            currentHost !== domain && !currentHost.endsWith(`.${domain}`)
+        )
+      : Array.from(new Set([...currentSettings.disabledDomains, currentHost]));
+
     saveSettings(
       { disabledDomains },
-      `${currentHost} を無効にしました`
+      disabled
+        ? `${currentHost} を有効に戻しました`
+        : `${currentHost} を無効にしました`
     );
   }
 
@@ -240,7 +255,7 @@
     elements.monthlyIncome.addEventListener("input", calculateHourlyFromMonthly);
     elements.monthlyHours.addEventListener("input", calculateHourlyFromMonthly);
     elements.netIncome.addEventListener("change", calculateHourlyFromMonthly);
-    elements.disableSite.addEventListener("click", disableCurrentSite);
+    elements.disableSite.addEventListener("click", toggleCurrentSite);
   }
 
   function init() {

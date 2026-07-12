@@ -145,6 +145,12 @@ h1 {
   cursor: default;
 }
 
+.site-button.is-disabled-site {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
 .status {
   min-height: 18px;
   margin: 0;
