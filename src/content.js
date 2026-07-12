@@ -27,6 +27,16 @@
     "sr-only",
     "visually-hidden"
   ]);
+  const AMAZON_REFERENCE_PRICE_SELECTORS = [
+    ".a-text-price",
+    ".aok-text-strike",
+    ".basisPrice",
+    ".priceBlockStrikePriceString",
+    "#listPrice",
+    "[data-a-strike='true']"
+  ];
+  const AMAZON_REFERENCE_LABEL_PATTERN =
+    /(過去価格|非セール価格|参考価格|通常価格|定価|メーカー希望小売価格|値引き前|割引前)/;
 
   function toHalfWidth(value) {
     return value
@@ -97,6 +107,49 @@
     );
   }
 
+  function isAmazonSite() {
+    return /(^|\.)amazon\.co\.jp$/.test(location.hostname);
+  }
+
+  function hasNearbyAmazonReferenceLabel(element) {
+    const containers = [
+      element,
+      element.closest(".basisPrice"),
+      element.closest(".a-row"),
+      element.parentElement
+    ].filter(Boolean);
+
+    return containers.some((container) => {
+      const text = (container.textContent || "").replace(/\s+/g, " ").trim();
+      if (!text || text.length > 120) {
+        return false;
+      }
+
+      const labelIndex = text.search(AMAZON_REFERENCE_LABEL_PATTERN);
+      const priceIndex = text.search(/[¥￥]\s*[0-9０-９]|[0-9０-９]\s*円/);
+      return labelIndex !== -1 && priceIndex !== -1 && labelIndex <= priceIndex;
+    });
+  }
+
+  function isAmazonReferencePriceElement(element) {
+    if (!isAmazonSite()) {
+      return false;
+    }
+
+    for (let current = element; current; current = current.parentElement) {
+      if (current.matches?.(AMAZON_REFERENCE_PRICE_SELECTORS.join(","))) {
+        return true;
+      }
+
+      const decoration = getComputedStyle(current).textDecorationLine;
+      if (decoration.includes("line-through")) {
+        return true;
+      }
+    }
+
+    return hasNearbyAmazonReferenceLabel(element);
+  }
+
   function shouldSkipElement(element) {
     for (let current = element; current; current = current.parentElement) {
       if (
@@ -104,6 +157,7 @@
         current.classList?.contains(JIKA_BADGE_CLASS) ||
         current.isContentEditable ||
         hasHiddenPriceClass(current) ||
+        isAmazonReferencePriceElement(current) ||
         SKIP_TAGS.has(current.tagName)
       ) {
         return true;
@@ -158,6 +212,7 @@
       .filter(
         (element) =>
           !element.hasAttribute(JIKA_PROCESSED_ATTR) &&
+          !isAmazonReferencePriceElement(element) &&
           !shouldSkipElement(element)
       )
       .map((element) => {
