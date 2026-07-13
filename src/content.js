@@ -14,7 +14,7 @@
     /([¥￥]\s*(?:[0-9０-９]{1,3}(?:[,，][0-9０-９]{3})+|[0-9０-９]+)|(?:[0-9０-９]{1,3}(?:[,，][0-9０-９]{3})+|[0-9０-９]+)\s*円)/g;
   const PRICE_SIGNAL_PATTERN = /[¥￥円]/;
   const AMAZON_CURRENT_PRICE_SELECTOR =
-    "#apex_offerDisplay_desktop #corePrice_feature_div .a-price.apex-pricetopay-value";
+    "#apex-pricetopay-accessibility-label ~ .a-price.priceToPay.apex-pricetopay-value";
   const MUTATION_DEBOUNCE_MS = 500;
   const MAX_PENDING_ROOTS = 80;
   const SKIP_TAGS = new Set([
@@ -190,9 +190,12 @@
       return [];
     }
 
+    const offscreenText = element
+      .querySelector(".a-offscreen")
+      ?.textContent?.trim();
     const priceText =
-      element.querySelector(".a-offscreen")?.textContent ||
-      element.querySelector(".a-price-whole")?.textContent ||
+      offscreenText ||
+      element.querySelector(".a-price-whole")?.textContent?.trim() ||
       "";
     const amount = parsePriceText(priceText);
 
