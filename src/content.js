@@ -13,31 +13,8 @@
   const PRICE_PATTERN =
     /([¥￥]\s*(?:[0-9０-９]{1,3}(?:[,，][0-9０-９]{3})+|[0-9０-９]+)|(?:[0-9０-９]{1,3}(?:[,，][0-9０-９]{3})+|[0-9０-９]+)\s*円)/g;
   const PRICE_SIGNAL_PATTERN = /[¥￥円]/;
-  const AMAZON_PRICE_SELECTOR = ".a-price, .a-price-whole";
-  const AMAZON_SCAN_ROOT_SELECTOR = [
-    "#corePriceDisplay_desktop_feature_div",
-    "#corePrice_feature_div",
-    "#apex_desktop",
-    "#apex_desktop_qualifiedBuybox",
-    "#twister_feature_div",
-    "#variation_color_name",
-    "#variation_size_name",
-    "#centerCol",
-    "#rightCol",
-    "#desktop_buybox",
-    "#s-main-slot"
-  ].join(",");
-  const AMAZON_INTERACTION_SELECTOR = [
-    "#twister_feature_div",
-    "#variation_color_name",
-    "#variation_size_name",
-    "#centerCol",
-    "#rightCol",
-    "#desktop_buybox",
-    "#buybox"
-  ].join(",");
-  const AMAZON_PASSIVE_RENDER_DELAYS = [900, 2400];
-  const AMAZON_INTERACTION_RENDER_DELAY_MS = 900;
+  const AMAZON_CURRENT_PRICE_SELECTOR =
+    "#apex_offerDisplay_desktop #corePrice_feature_div .a-price.apex-pricetopay-value";
   const MUTATION_DEBOUNCE_MS = 500;
   const MAX_PENDING_ROOTS = 80;
   const SKIP_TAGS = new Set([
@@ -55,18 +32,6 @@
     "sr-only",
     "visually-hidden"
   ]);
-  const AMAZON_REFERENCE_PRICE_SELECTORS = [
-    ".a-text-price",
-    ".aok-text-strike",
-    ".basisPrice",
-    ".priceBlockStrikePriceString",
-    "#listPrice",
-    "[data-a-strike='true']"
-  ];
-  const AMAZON_REFERENCE_PRICE_SELECTOR =
-    AMAZON_REFERENCE_PRICE_SELECTORS.join(",");
-  const AMAZON_REFERENCE_LABEL_PATTERN =
-    /(過去価格|非セール価格|参考価格|通常価格|定価|メーカー希望小売価格|値引き前|割引前)/;
 
   function toHalfWidth(value) {
     return value
@@ -141,44 +106,6 @@
     return /(^|\.)amazon\.co\.jp$/.test(location.hostname);
   }
 
-  function hasNearbyAmazonReferenceLabel(element) {
-    const containers = [
-      element,
-      element.closest(".basisPrice"),
-      element.closest(".a-row"),
-      element.parentElement
-    ].filter(Boolean);
-
-    return containers.some((container) => {
-      const text = (container.textContent || "").replace(/\s+/g, " ").trim();
-      if (!text || text.length > 120) {
-        return false;
-      }
-
-      const labelIndex = text.search(AMAZON_REFERENCE_LABEL_PATTERN);
-      const priceIndex = text.search(/[¥￥]\s*[0-9０-９]|[0-9０-９]\s*円/);
-      return labelIndex !== -1 && priceIndex !== -1 && labelIndex <= priceIndex;
-    });
-  }
-
-  function isAmazonReferencePriceElement(element) {
-    if (!isAmazonSite()) {
-      return false;
-    }
-
-    for (let current = element; current; current = current.parentElement) {
-      if (
-        current.matches?.(AMAZON_REFERENCE_PRICE_SELECTOR) ||
-        current.tagName === "S" ||
-        current.tagName === "DEL"
-      ) {
-        return true;
-      }
-    }
-
-    return hasNearbyAmazonReferenceLabel(element);
-  }
-
   function shouldSkipElement(element) {
     for (let current = element; current; current = current.parentElement) {
       if (
@@ -186,7 +113,6 @@
         current.classList?.contains(JIKA_BADGE_CLASS) ||
         current.isContentEditable ||
         hasHiddenPriceClass(current) ||
-        isAmazonReferencePriceElement(current) ||
         SKIP_TAGS.has(current.tagName)
       ) {
         return true;
@@ -254,62 +180,23 @@
     root = document,
     minPrice = DEFAULT_SETTINGS.minPrice
   ) {
-    const candidates = new Set();
+    const element = root.querySelector?.(AMAZON_CURRENT_PRICE_SELECTOR);
 
-    if (!root.querySelectorAll && root.nodeType !== Node.ELEMENT_NODE) {
+    if (
+      !element ||
+      element.hasAttribute(JIKA_PROCESSED_ATTR) ||
+      shouldSkipElement(element)
+    ) {
       return [];
     }
 
-    if (root.nodeType === Node.ELEMENT_NODE) {
-      if (root.matches?.(AMAZON_PRICE_SELECTOR)) {
-        candidates.add(root.closest(".a-price") || root);
-      }
-    }
+    const priceText =
+      element.querySelector(".a-offscreen")?.textContent ||
+      element.querySelector(".a-price-whole")?.textContent ||
+      "";
+    const amount = parsePriceText(priceText);
 
-    for (const element of root.querySelectorAll?.(AMAZON_PRICE_SELECTOR) || []) {
-      candidates.add(element.closest(".a-price") || element);
-    }
-
-    return [...candidates]
-      .filter(
-        (element) =>
-          !element.hasAttribute(JIKA_PROCESSED_ATTR) &&
-          !isAmazonReferencePriceElement(element) &&
-          !shouldSkipElement(element)
-      )
-      .map((element) => {
-        const offscreen = element.querySelector(".a-offscreen");
-        const whole = element.querySelector(".a-price-whole");
-        const amount = parsePriceText(
-          offscreen?.textContent || whole?.textContent || element.textContent
-        );
-        return { element, amount };
-      })
-      .filter(({ amount }) => amount !== null && amount >= minPrice);
-  }
-
-  function getAmazonScanRoots(root) {
-    if (!isAmazonSite()) {
-      return [root];
-    }
-
-    if (
-      root !== document &&
-      root !== document.body &&
-      root !== document.documentElement
-    ) {
-      return [root];
-    }
-
-    const roots = [
-      ...document.querySelectorAll(AMAZON_SCAN_ROOT_SELECTOR)
-    ].filter((element, index, list) => {
-      return !list.some(
-        (other, otherIndex) => otherIndex !== index && element.contains(other)
-      );
-    });
-
-    return roots.length > 0 ? roots : [document.body];
+    return amount !== null && amount >= minPrice ? [{ element, amount }] : [];
   }
 
   function normalizeSettings(settings) {
@@ -371,9 +258,6 @@
   let currentSettings = normalizeSettings(DEFAULT_SETTINGS);
   let observer = null;
   let debounceTimer = null;
-  let amazonInteractionTimer = null;
-  let amazonInteractionListenersBound = false;
-  let amazonPassiveRenderTimers = [];
   let pendingRoots = new Set();
 
   function createBadge(amount) {
@@ -414,10 +298,6 @@
   }
 
   function renderTextPrices(root = document.body) {
-    if (!shouldScanTextPrices(root)) {
-      return;
-    }
-
     for (const item of collectTextPriceNodes(root, currentSettings.minPrice)) {
       if (item.node.parentNode) {
         renderTextNode(item);
@@ -425,33 +305,18 @@
     }
   }
 
-  function shouldScanTextPrices(root) {
-    if (!isAmazonSite()) {
-      return true;
-    }
-
-    return (
-      root !== document &&
-      root !== document.body &&
-      root !== document.documentElement
-    );
-  }
-
-  function renderAmazonPrices(root = document.body) {
-    for (const scanRoot of getAmazonScanRoots(root)) {
-      for (const { element, amount } of collectAmazonPriceTargets(
-        scanRoot,
-        currentSettings.minPrice
-      )) {
-        const badge = createBadge(amount);
-        element.setAttribute(JIKA_PROCESSED_ATTR, "amazon");
-        element.insertAdjacentElement("afterend", badge);
-      }
+  function renderAmazonPrice() {
+    for (const { element, amount } of collectAmazonPriceTargets(
+      document,
+      currentSettings.minPrice
+    )) {
+      const badge = createBadge(amount);
+      element.setAttribute(JIKA_PROCESSED_ATTR, "amazon");
+      element.insertAdjacentElement("afterend", badge);
     }
   }
 
   function renderPricesInRoot(root) {
-    renderAmazonPrices(root);
     renderTextPrices(root);
   }
 
@@ -470,6 +335,16 @@
   }
 
   function clearRenderedBadges() {
+    if (isAmazonSite()) {
+      const price = document.querySelector(AMAZON_CURRENT_PRICE_SELECTOR);
+      price?.removeAttribute(JIKA_PROCESSED_ATTR);
+
+      if (price?.nextElementSibling?.classList.contains(JIKA_BADGE_CLASS)) {
+        price.nextElementSibling.remove();
+      }
+      return;
+    }
+
     unwrapTextBadges();
 
     for (const badge of document.querySelectorAll(`.${JIKA_BADGE_CLASS}`)) {
@@ -505,98 +380,13 @@
     }
   }
 
-  function clearAmazonRenderTimers() {
-    clearTimeout(amazonInteractionTimer);
-    amazonInteractionTimer = null;
-
-    for (const timer of amazonPassiveRenderTimers) {
-      clearTimeout(timer);
-    }
-    amazonPassiveRenderTimers = [];
-  }
-
-  function rerenderAllPrices() {
-    if (!shouldRender()) {
-      clearRenderedBadges();
-      return;
-    }
-
-    disconnectObserver();
-    observer = null;
-    pendingRoots.clear();
-    clearRenderedBadges();
-    renderAllPrices();
-  }
-
-  function scheduleAmazonInteractionRender() {
-    clearTimeout(amazonInteractionTimer);
-    amazonInteractionTimer = setTimeout(() => {
-      amazonInteractionTimer = null;
-      rerenderAllPrices();
-    }, AMAZON_INTERACTION_RENDER_DELAY_MS);
-  }
-
-  function scheduleAmazonPassiveRenders() {
-    if (!isAmazonSite()) {
-      return;
-    }
-
-    for (const delay of AMAZON_PASSIVE_RENDER_DELAYS) {
-      const timer = setTimeout(() => {
-        amazonPassiveRenderTimers = amazonPassiveRenderTimers.filter(
-          (storedTimer) => storedTimer !== timer
-        );
-        rerenderAllPrices();
-      }, delay);
-      amazonPassiveRenderTimers.push(timer);
-    }
-  }
-
-  function handleAmazonInteraction(event) {
-    const target = event.target;
-
-    if (
-      !target?.closest ||
-      target.closest(`.${JIKA_BADGE_CLASS}`) ||
-      !target.closest(AMAZON_INTERACTION_SELECTOR)
-    ) {
-      return;
-    }
-
-    scheduleAmazonInteractionRender();
-  }
-
-  function bindAmazonInteractionRefresh() {
-    if (!isAmazonSite() || amazonInteractionListenersBound) {
-      return;
-    }
-
-    amazonInteractionListenersBound = true;
-    document.addEventListener("click", handleAmazonInteraction, {
-      capture: true,
-      passive: true
-    });
-    document.addEventListener("change", handleAmazonInteraction, true);
-  }
-
   function hasPotentialPriceSignal(node) {
     if (node.nodeType === Node.TEXT_NODE) {
-      if (node.parentElement?.closest(AMAZON_PRICE_SELECTOR)) {
-        return true;
-      }
-
       return PRICE_SIGNAL_PATTERN.test(node.nodeValue || "");
     }
 
     if (node.nodeType !== Node.ELEMENT_NODE) {
       return false;
-    }
-
-    if (
-      node.matches?.(AMAZON_PRICE_SELECTOR) ||
-      node.querySelector?.(AMAZON_PRICE_SELECTOR)
-    ) {
-      return true;
     }
 
     if (node.childElementCount > 120) {
@@ -725,13 +515,19 @@
   }
 
   function renderAllPrices() {
+    if (isAmazonSite()) {
+      if (shouldRender()) {
+        renderAmazonPrice();
+      }
+      return;
+    }
+
     pendingRoots = new Set([document.body]);
     renderPendingPrices();
   }
 
   function refreshAllBadges() {
     clearTimeout(debounceTimer);
-    clearAmazonRenderTimers();
     disconnectObserver();
     observer = null;
     pendingRoots.clear();
@@ -764,8 +560,6 @@
     readSettings().then((settings) => {
       currentSettings = settings;
       refreshAllBadges();
-      bindAmazonInteractionRefresh();
-      scheduleAmazonPassiveRenders();
       watchSettings();
     });
   }
