@@ -27,6 +27,17 @@
     "#desktop_buybox",
     "#s-main-slot"
   ].join(",");
+  const AMAZON_INTERACTION_SELECTOR = [
+    "#twister_feature_div",
+    "#variation_color_name",
+    "#variation_size_name",
+    "#centerCol",
+    "#rightCol",
+    "#desktop_buybox",
+    "#buybox"
+  ].join(",");
+  const AMAZON_PASSIVE_RENDER_DELAYS = [900, 2400];
+  const AMAZON_INTERACTION_RENDER_DELAY_MS = 900;
   const MUTATION_DEBOUNCE_MS = 500;
   const MAX_PENDING_ROOTS = 80;
   const SKIP_TAGS = new Set([
@@ -360,6 +371,9 @@
   let currentSettings = normalizeSettings(DEFAULT_SETTINGS);
   let observer = null;
   let debounceTimer = null;
+  let amazonInteractionTimer = null;
+  let amazonInteractionListenersBound = false;
+  let amazonPassiveRenderTimers = [];
   let pendingRoots = new Set();
 
   function createBadge(amount) {
@@ -491,22 +505,81 @@
     }
   }
 
-  function getMutationObserverRoots() {
-    if (!isAmazonSite()) {
-      return [document.body];
+  function clearAmazonRenderTimers() {
+    clearTimeout(amazonInteractionTimer);
+    amazonInteractionTimer = null;
+
+    for (const timer of amazonPassiveRenderTimers) {
+      clearTimeout(timer);
+    }
+    amazonPassiveRenderTimers = [];
+  }
+
+  function rerenderAllPrices() {
+    if (!shouldRender()) {
+      clearRenderedBadges();
+      return;
     }
 
-    const roots = getAmazonScanRoots(document.body).filter(
-      (root) => root?.isConnected
-    );
-    return roots.length > 0 ? roots : [document.body];
+    disconnectObserver();
+    observer = null;
+    pendingRoots.clear();
+    clearRenderedBadges();
+    renderAllPrices();
+  }
+
+  function scheduleAmazonInteractionRender() {
+    clearTimeout(amazonInteractionTimer);
+    amazonInteractionTimer = setTimeout(() => {
+      amazonInteractionTimer = null;
+      rerenderAllPrices();
+    }, AMAZON_INTERACTION_RENDER_DELAY_MS);
+  }
+
+  function scheduleAmazonPassiveRenders() {
+    if (!isAmazonSite()) {
+      return;
+    }
+
+    for (const delay of AMAZON_PASSIVE_RENDER_DELAYS) {
+      const timer = setTimeout(() => {
+        amazonPassiveRenderTimers = amazonPassiveRenderTimers.filter(
+          (storedTimer) => storedTimer !== timer
+        );
+        rerenderAllPrices();
+      }, delay);
+      amazonPassiveRenderTimers.push(timer);
+    }
+  }
+
+  function handleAmazonInteraction(event) {
+    const target = event.target;
+
+    if (
+      !target?.closest ||
+      target.closest(`.${JIKA_BADGE_CLASS}`) ||
+      !target.closest(AMAZON_INTERACTION_SELECTOR)
+    ) {
+      return;
+    }
+
+    scheduleAmazonInteractionRender();
+  }
+
+  function bindAmazonInteractionRefresh() {
+    if (!isAmazonSite() || amazonInteractionListenersBound) {
+      return;
+    }
+
+    amazonInteractionListenersBound = true;
+    document.addEventListener("click", handleAmazonInteraction, {
+      capture: true,
+      passive: true
+    });
+    document.addEventListener("change", handleAmazonInteraction, true);
   }
 
   function hasPotentialPriceSignal(node) {
-    if (isAmazonSite()) {
-      return hasAmazonPriceSignal(node);
-    }
-
     if (node.nodeType === Node.TEXT_NODE) {
       if (node.parentElement?.closest(AMAZON_PRICE_SELECTOR)) {
         return true;
@@ -531,21 +604,6 @@
     }
 
     return PRICE_SIGNAL_PATTERN.test(node.textContent || "");
-  }
-
-  function hasAmazonPriceSignal(node) {
-    if (node.nodeType === Node.TEXT_NODE) {
-      return Boolean(node.parentElement?.closest(AMAZON_PRICE_SELECTOR));
-    }
-
-    if (node.nodeType !== Node.ELEMENT_NODE) {
-      return false;
-    }
-
-    return (
-      node.matches?.(AMAZON_PRICE_SELECTOR) ||
-      Boolean(node.querySelector?.(AMAZON_PRICE_SELECTOR))
-    );
   }
 
   function compactPendingRoots(roots) {
@@ -609,7 +667,7 @@
   }
 
   function observeMutations() {
-    if (!document.body || observer) {
+    if (!document.body || observer || isAmazonSite()) {
       return;
     }
 
@@ -635,13 +693,11 @@
       }
     });
 
-    for (const root of getMutationObserverRoots()) {
-      observer.observe(root, {
-        childList: true,
-        characterData: true,
-        subtree: true
-      });
-    }
+    observer.observe(document.body, {
+      childList: true,
+      characterData: true,
+      subtree: true
+    });
   }
 
   function renderPendingPrices() {
@@ -675,6 +731,7 @@
 
   function refreshAllBadges() {
     clearTimeout(debounceTimer);
+    clearAmazonRenderTimers();
     disconnectObserver();
     observer = null;
     pendingRoots.clear();
@@ -707,6 +764,8 @@
     readSettings().then((settings) => {
       currentSettings = settings;
       refreshAllBadges();
+      bindAmazonInteractionRefresh();
+      scheduleAmazonPassiveRenders();
       watchSettings();
     });
   }
