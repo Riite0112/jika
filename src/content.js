@@ -13,8 +13,10 @@
   const PRICE_PATTERN =
     /([¥￥]\s*(?:[0-9０-９]{1,3}(?:[,，][0-9０-９]{3})+|[0-9０-９]+)|(?:[0-9０-９]{1,3}(?:[,，][0-9０-９]{3})+|[0-9０-９]+)\s*円)/g;
   const PRICE_SIGNAL_PATTERN = /[¥￥円]/;
-  const AMAZON_CURRENT_PRICE_SELECTOR =
-    "#apex-pricetopay-accessibility-label ~ .a-price.priceToPay.apex-pricetopay-value";
+  const AMAZON_CURRENT_PRICE_SELECTOR = [
+    "#apex-pricetopay-accessibility-label ~ .a-price.priceToPay.apex-pricetopay-value",
+    "#apex_offerDisplay_desktop #corePrice_feature_div .a-price.apex-pricetopay-value"
+  ].join(",");
   const MUTATION_DEBOUNCE_MS = 500;
   const MAX_PENDING_ROOTS = 80;
   const SKIP_TAGS = new Set([
@@ -180,26 +182,25 @@
     root = document,
     minPrice = DEFAULT_SETTINGS.minPrice
   ) {
-    const element = root.querySelector?.(AMAZON_CURRENT_PRICE_SELECTOR);
-
-    if (
-      !element ||
-      element.hasAttribute(JIKA_PROCESSED_ATTR) ||
-      shouldSkipElement(element)
-    ) {
-      return [];
-    }
-
-    const offscreenText = element
-      .querySelector(".a-offscreen")
-      ?.textContent?.trim();
-    const priceText =
-      offscreenText ||
-      element.querySelector(".a-price-whole")?.textContent?.trim() ||
-      "";
-    const amount = parsePriceText(priceText);
-
-    return amount !== null && amount >= minPrice ? [{ element, amount }] : [];
+    return [...(root.querySelectorAll?.(AMAZON_CURRENT_PRICE_SELECTOR) || [])]
+      .filter(
+        (element) =>
+          !element.hasAttribute(JIKA_PROCESSED_ATTR) &&
+          !shouldSkipElement(element)
+      )
+      .map((element) => {
+        const offscreenText = element
+          .querySelector(".a-offscreen")
+          ?.textContent?.trim();
+        const priceText =
+          offscreenText ||
+          element.querySelector(".a-price-whole")?.textContent?.trim() ||
+          "";
+        return { element, amount: parsePriceText(priceText) };
+      })
+      .filter(
+        ({ amount }) => amount !== null && amount >= minPrice
+      );
   }
 
   function normalizeSettings(settings) {
@@ -339,11 +340,13 @@
 
   function clearRenderedBadges() {
     if (isAmazonSite()) {
-      const price = document.querySelector(AMAZON_CURRENT_PRICE_SELECTOR);
-      price?.removeAttribute(JIKA_PROCESSED_ATTR);
-
-      if (price?.nextElementSibling?.classList.contains(JIKA_BADGE_CLASS)) {
-        price.nextElementSibling.remove();
+      for (const price of document.querySelectorAll(
+        AMAZON_CURRENT_PRICE_SELECTOR
+      )) {
+        price.removeAttribute(JIKA_PROCESSED_ATTR);
+        if (price.nextElementSibling?.classList.contains(JIKA_BADGE_CLASS)) {
+          price.nextElementSibling.remove();
+        }
       }
       return;
     }
